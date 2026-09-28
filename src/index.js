@@ -1,0 +1,192 @@
+import express from "express";
+import { readdirSync, existsSync } from "node:fs";
+import { join, resolve, relative } from "node:path";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
+
+const PROJECTS_ROOT = resolve(process.env.PROJECTS_ROOT || "/srv/chargehand/repos");
+const SONAR_HOST_URL = process.env.SONAR_HOST_URL || "";
+const SONAR_TOKEN = process.env.SONAR_TOKEN || "";
+const RUN_TIMEOUT_MS = Number(process.env.RUN_TIMEOUT_MS || 10 * 60 * 1000);
+const MAX_OUTPUT_CHARS = 20_000;
+
+// ponytail: image tags, not digests. Pin exact digests in homelab-gitops's
+// PINS.md before deploying — this repo only names the toolchain, it doesn't
+// vet supply-chain trust for you.
+const RUNNERS = {
+  dotnet: {
+    marker: (dir) => readdirSync(dir).some((f) => f.endsWith(".sln") || f.endsWith(".csproj")),
+    image: "mcr.microsoft.com/dotnet/sdk:8.0",
+    cmd: "cp -r /repo/. /work && cd /work && dotnet test --nologo",
+  },
+  npm: {
+    marker: (dir) => existsSync(join(dir, "package.json")),
+    image: "node:20-slim",
+    cmd: "cp -r /repo/. /work && cd /work && npm ci && npm test",
+  },
+  pytest: {
+    marker: (dir) =>
+      existsSync(join(dir, "pyproject.toml")) || existsSync(join(dir, "requirements.txt")),
+    image: "python:3.12-slim",
+    cmd:
+      "cp -r /repo/. /work && cd /work && " +
+      "(test -f requirements.txt && pip install -q -r requirements.txt || true) && pytest -q",
+  },
+};
+
+function detectType(dir) {
+  for (const [name, runner] of Object.entries(RUNNERS)) {
+    if (runner.marker(dir)) return name;
+  }
+  return null;
+}
+
+function listProjects() {
+  return readdirSync(PROJECTS_ROOT, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => {
+      const dir = join(PROJECTS_ROOT, e.name);
+      return { name: e.name, type: detectType(dir) };
+    });
+}
+
+// Resolves `project` against the allowlist `list_projects` itself returns —
+// the only thing that stops a path-traversal or injected `../../` argument
+// from escaping PROJECTS_ROOT.
+function resolveProject(project) {
+  const known = listProjects().find((p) => p.name === project);
+  if (!known) throw new Error(`unknown project "${project}" — call list_projects first`);
+  const dir = join(PROJECTS_ROOT, project);
+  if (relative(PROJECTS_ROOT, dir).startsWith("..")) throw new Error("invalid project path");
+  return { dir, type: known.type };
+}
+
+function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS } = {}) {
+  return new Promise((res) => {
+    const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    const kill = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (out += d));
+    child.on("close", (code) => {
+      clearTimeout(kill);
+      res({ code, output: out.slice(-MAX_OUTPUT_CHARS) });
+    });
+  });
+}
+
+const server = new McpServer({ name: "devbox-mcp", version: "0.1.0" });
+
+server.registerTool(
+  "list_projects",
+  {
+    description: `List projects under ${PROJECTS_ROOT} and their detected toolchain (dotnet/npm/pytest/unknown).`,
+    inputSchema: {},
+  },
+  async () => ({
+    content: [{ type: "text", text: JSON.stringify(listProjects(), null, 2) }],
+  })
+);
+
+server.registerTool(
+  "run_tests",
+  {
+    description:
+      "Run a project's real test suite in a throwaway, read-only-mounted container. " +
+      "Project must be one returned by list_projects.",
+    inputSchema: { project: z.string() },
+  },
+  async ({ project }) => {
+    const { dir, type } = resolveProject(project);
+    if (!type || !RUNNERS[type]) {
+      return {
+        content: [{ type: "text", text: `no supported toolchain detected for "${project}"` }],
+        isError: true,
+      };
+    }
+    const runner = RUNNERS[type];
+    const name = `devbox-run-${randomUUID()}`;
+    const { code, output } = await runContainer([
+      "run",
+      "--rm",
+      "--name",
+      name,
+      "--memory=2g",
+      "--cpus=2",
+      // ponytail: package restore (npm ci / dotnet restore / pip install)
+      // needs registry access, so this can't be --network=none. That's the
+      // real exposure: test/restore code in the project gets outbound network
+      // from the VPS. Narrow with an egress-only proxy if that's ever a
+      // problem in practice.
+      "-v",
+      `${dir}:/repo:ro`,
+      "--tmpfs",
+      "/work:size=4g,exec",
+      "-w",
+      "/work",
+      runner.image,
+      "sh",
+      "-c",
+      runner.cmd,
+    ]);
+    return { content: [{ type: "text", text: output }], isError: code !== 0 };
+  }
+);
+
+server.registerTool(
+  "sonar_scan",
+  {
+    description:
+      "Run a SonarQube scan for a project against the configured SonarQube server. " +
+      "Requires a sonar-project.properties file in the project.",
+    inputSchema: { project: z.string() },
+  },
+  async ({ project }) => {
+    if (!SONAR_HOST_URL || !SONAR_TOKEN) {
+      return {
+        content: [{ type: "text", text: "SONAR_HOST_URL / SONAR_TOKEN not configured" }],
+        isError: true,
+      };
+    }
+    const { dir } = resolveProject(project);
+    if (!existsSync(join(dir, "sonar-project.properties"))) {
+      return {
+        content: [{ type: "text", text: `no sonar-project.properties in "${project}"` }],
+        isError: true,
+      };
+    }
+    const name = `devbox-sonar-${randomUUID()}`;
+    const { code, output } = await runContainer([
+      "run",
+      "--rm",
+      "--name",
+      name,
+      "--memory=2g",
+      "--cpus=2",
+      "-v",
+      `${dir}:/usr/src:ro`,
+      "-e",
+      `SONAR_HOST_URL=${SONAR_HOST_URL}`,
+      "-e",
+      `SONAR_TOKEN=${SONAR_TOKEN}`,
+      "sonarsource/sonar-scanner-cli:latest",
+    ]);
+    return { content: [{ type: "text", text: output }], isError: code !== 0 };
+  }
+);
+
+const app = express();
+app.use(express.json());
+
+app.post("/mcp", async (req, res) => {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on("close", () => transport.close());
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+});
+
+const port = Number(process.env.PORT || 8000);
+app.listen(port, () => console.log(`devbox-mcp listening on :${port}, projects root ${PROJECTS_ROOT}`));
