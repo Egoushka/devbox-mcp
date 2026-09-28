@@ -1,4 +1,4 @@
-FROM node:24-slim
+FROM node:26-slim
 
 # docker CLI only — talks to DOCKER_HOST (point it at a docker-socket-proxy,
 # never the raw socket: see README "Security").
