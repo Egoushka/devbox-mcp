@@ -16,7 +16,9 @@ Tools:
   `PROJECTS_ROOT`.
 - `sonar_scan(project)` — runs `sonar-scanner-cli` against the project
   (requires a `sonar-project.properties` file in it) and your SonarQube
-  server.
+  server. If SonarQube runs on demand (stopped when idle), it first
+  `docker start`s the containers in `SONAR_CONTAINERS`, in order, and polls
+  `/api/system/status` until `UP`; a running container is a no-op.
 
 ## Why this needs a Docker API proxy, not the raw socket
 
@@ -35,9 +37,11 @@ environment:
   CONTAINERS: 1   # create/start/wait/logs/remove containers
   POST: 1         # without this, the proxy is read-only
   IMAGES: 1       # pull the toolchain images
-  # everything else defaults to 0/off: no EXEC, no NETWORKS, no VOLUMES,
-  # no access to containers this server didn't create.
+  # everything else defaults to 0/off: no EXEC, no NETWORKS, no VOLUMES.
 ```
+
+`CONTAINERS` + `POST` also let this server start existing containers by
+name, which `sonar_scan` uses to wake SonarQube.
 
 This is a real narrowing (no `docker exec` into unrelated containers, no
 host-network access, no volume mounts beyond what this server's own `docker
@@ -53,6 +57,8 @@ expose beyond a private network.
 | `DOCKER_HOST` | (docker default) | Point at your docker-socket-proxy, e.g. `tcp://docker-socket-proxy:2375` |
 | `SONAR_HOST_URL` | — | Your SonarQube server, reachable **by address**, not by a Docker Compose service name — the scan runs in its own one-shot container on the default bridge network, not your SonarQube stack's network |
 | `SONAR_TOKEN` | — | SonarQube user/analysis token |
+| `SONAR_CONTAINERS` | `sonarqube-db-1,sonarqube-sonarqube-1` | Containers `sonar_scan` starts, in this order, before scanning. Set it empty to skip the wake when SonarQube is always on or not in this Docker host |
+| `SONAR_WAKE_TIMEOUT_MS` | `180000` | How long `sonar_scan` waits for SonarQube to report `UP` before failing |
 | `RUN_TIMEOUT_MS` | `600000` | Kill switch per container run |
 | `PORT` | `8000` | HTTP port (Streamable HTTP MCP transport, path `/mcp`) |
 
