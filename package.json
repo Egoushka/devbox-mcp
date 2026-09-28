@@ -1,11 +1,12 @@
 {
   "name": "devbox-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server that runs a project's real test suite and SonarQube scans in throwaway containers",
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test"
   },
   "license": "MIT",
   "dependencies": {

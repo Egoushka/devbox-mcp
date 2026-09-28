@@ -6,11 +6,20 @@ import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
+import { wakeSonar } from "./sonar-wake.js";
 
 const PROJECTS_ROOT = resolve(process.env.PROJECTS_ROOT || "/srv/chargehand/repos");
 const SONAR_HOST_URL = process.env.SONAR_HOST_URL || "";
 const SONAR_TOKEN = process.env.SONAR_TOKEN || "";
 const RUN_TIMEOUT_MS = Number(process.env.RUN_TIMEOUT_MS || 10 * 60 * 1000);
+// Containers `sonar_scan` starts, in order, before scanning; empty disables
+// the wake. `??`, not `||`: SONAR_CONTAINERS="" must mean "none".
+const SONAR_CONTAINERS = (process.env.SONAR_CONTAINERS ?? "sonarqube-db-1,sonarqube-sonarqube-1")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+// A cold start measured 33s to UP; 180s leaves room for a busy host.
+const SONAR_WAKE_TIMEOUT_MS = Number(process.env.SONAR_WAKE_TIMEOUT_MS || 180 * 1000);
 const MAX_OUTPUT_CHARS = 20_000;
 
 // ponytail: image tags, not digests. Pin exact digests in homelab-gitops's
@@ -78,7 +87,7 @@ function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS } = {}) {
   });
 }
 
-const server = new McpServer({ name: "devbox-mcp", version: "0.1.0" });
+const server = new McpServer({ name: "devbox-mcp", version: "0.2.0" });
 
 server.registerTool(
   "list_projects",
@@ -140,7 +149,8 @@ server.registerTool(
   "sonar_scan",
   {
     description:
-      "Run a SonarQube scan for a project against the configured SonarQube server. " +
+      "Run a SonarQube scan for a project against the configured SonarQube server, " +
+      "starting SonarQube first if it is asleep (can take ~30s). " +
       "Requires a sonar-project.properties file in the project.",
     inputSchema: { project: z.string() },
   },
@@ -157,6 +167,18 @@ server.registerTool(
         content: [{ type: "text", text: `no sonar-project.properties in "${project}"` }],
         isError: true,
       };
+    }
+    if (SONAR_CONTAINERS.length) {
+      try {
+        await wakeSonar({
+          hostUrl: SONAR_HOST_URL,
+          containers: SONAR_CONTAINERS,
+          timeoutMs: SONAR_WAKE_TIMEOUT_MS,
+          docker: (args) => runContainer(args, { timeoutMs: 60 * 1000 }),
+        });
+      } catch (err) {
+        return { content: [{ type: "text", text: err.message }], isError: true };
+      }
     }
     const name = `devbox-sonar-${randomUUID()}`;
     const { code, output } = await runContainer([
