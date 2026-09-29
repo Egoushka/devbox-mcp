@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { wakeSonar } from "./sonar-wake.js";
+import { RUNNERS, detectType } from "./toolchains.js";
 
 const PROJECTS_ROOT = resolve(process.env.PROJECTS_ROOT || "/srv/chargehand/repos");
 const SONAR_HOST_URL = process.env.SONAR_HOST_URL || "";
@@ -21,37 +22,6 @@ const SONAR_CONTAINERS = (process.env.SONAR_CONTAINERS ?? "sonarqube-db-1,sonarq
 // A cold start measured 33s to UP; 180s leaves room for a busy host.
 const SONAR_WAKE_TIMEOUT_MS = Number(process.env.SONAR_WAKE_TIMEOUT_MS || 180 * 1000);
 const MAX_OUTPUT_CHARS = 20_000;
-
-// ponytail: image tags, not digests. Pin exact digests in homelab-gitops's
-// PINS.md before deploying — this repo only names the toolchain, it doesn't
-// vet supply-chain trust for you.
-const RUNNERS = {
-  dotnet: {
-    marker: (dir) => readdirSync(dir).some((f) => f.endsWith(".sln") || f.endsWith(".csproj")),
-    image: "mcr.microsoft.com/dotnet/sdk:8.0",
-    cmd: "cp -r /repo/. /work && cd /work && dotnet test --nologo",
-  },
-  npm: {
-    marker: (dir) => existsSync(join(dir, "package.json")),
-    image: "node:20-slim",
-    cmd: "cp -r /repo/. /work && cd /work && npm ci && npm test",
-  },
-  pytest: {
-    marker: (dir) =>
-      existsSync(join(dir, "pyproject.toml")) || existsSync(join(dir, "requirements.txt")),
-    image: "python:3.12-slim",
-    cmd:
-      "cp -r /repo/. /work && cd /work && " +
-      "(test -f requirements.txt && pip install -q -r requirements.txt || true) && pytest -q",
-  },
-};
-
-function detectType(dir) {
-  for (const [name, runner] of Object.entries(RUNNERS)) {
-    if (runner.marker(dir)) return name;
-  }
-  return null;
-}
 
 function listProjects() {
   return readdirSync(PROJECTS_ROOT, { withFileTypes: true })
@@ -87,7 +57,7 @@ function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS } = {}) {
   });
 }
 
-const server = new McpServer({ name: "devbox-mcp", version: "0.2.0" });
+const server = new McpServer({ name: "devbox-mcp", version: "0.3.0" });
 
 server.registerTool(
   "list_projects",
@@ -136,7 +106,7 @@ server.registerTool(
       "/work:size=4g,exec",
       "-w",
       "/work",
-      runner.image,
+      runner.image(dir),
       "sh",
       "-c",
       runner.cmd,

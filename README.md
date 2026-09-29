@@ -81,6 +81,10 @@ Pin an exact tag/digest in production — `latest` is for trying it out.
 No arbitrary path execution (only `list_projects`-returned names), no write
 access to the mounted repos, no auto-remediation, no CI trigger integration.
 Toolchains supported: dotnet, npm, pytest — pull requests welcome for more.
+A dotnet project is one with a `.sln`, `.slnx` or `.csproj` at its root; its
+tests run in `mcr.microsoft.com/dotnet/sdk:<major>.0`, the major taken from
+`global.json`'s `sdk.version` (`8.0` without one), because an SDK image only
+carries its own runtime.
 
 ## License
 
