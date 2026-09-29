@@ -19,6 +19,14 @@ Tools:
   server. If SonarQube runs on demand (stopped when idle), it first
   `docker start`s the containers in `SONAR_CONTAINERS`, in order, and polls
   `/api/system/status` until `UP`; a running container is a no-op.
+- `sonar_quality_gate(project)` — the quality-gate status (`OK`/`ERROR`/`NONE`)
+  and conditions of the project's latest analysis, read from the web API for
+  the `sonar.projectKey` in its `sonar-project.properties`. Analysis finishes
+  after `sonar_scan` returns, so the result carries `pending` (a task is still
+  queued) and `lastTask` (which analysis the gate describes); call again to
+  poll. It needs a `SONAR_TOKEN` allowed to call the web API — SonarQube
+  documents that for user tokens (Browse on the project), while analysis
+  tokens are meant for running scans.
 
 ## Why this needs a Docker API proxy, not the raw socket
 

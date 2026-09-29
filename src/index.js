@@ -1,5 +1,5 @@
 import express from "express";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -7,6 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { wakeSonar } from "./sonar-wake.js";
+import { projectKeyFrom, qualityGate } from "./sonar-gate.js";
 import { RUNNERS } from "./toolchains.js";
 import { listProjects as listProjectsIn } from "./projects.js";
 
@@ -58,7 +59,33 @@ function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS } = {}) {
   });
 }
 
-const server = new McpServer({ name: "devbox-mcp", version: "0.4.0" });
+const toolError = (text) => ({ content: [{ type: "text", text }], isError: true });
+
+// What both sonar tools need before talking to SonarQube: config, a known
+// project with a sonar-project.properties, and a server that is awake.
+// Returns { dir } or { error } (an MCP error result).
+async function sonarReady(project) {
+  if (!SONAR_HOST_URL || !SONAR_TOKEN) return { error: toolError("SONAR_HOST_URL / SONAR_TOKEN not configured") };
+  const { dir } = resolveProject(project);
+  if (!existsSync(join(dir, "sonar-project.properties"))) {
+    return { error: toolError(`no sonar-project.properties in "${project}"`) };
+  }
+  if (SONAR_CONTAINERS.length) {
+    try {
+      await wakeSonar({
+        hostUrl: SONAR_HOST_URL,
+        containers: SONAR_CONTAINERS,
+        timeoutMs: SONAR_WAKE_TIMEOUT_MS,
+        docker: (args) => runContainer(args, { timeoutMs: 60 * 1000 }),
+      });
+    } catch (err) {
+      return { error: toolError(err.message) };
+    }
+  }
+  return { dir };
+}
+
+const server = new McpServer({ name: "devbox-mcp", version: "0.5.0" });
 
 server.registerTool(
   "list_projects",
@@ -129,31 +156,8 @@ server.registerTool(
     inputSchema: { project: z.string() },
   },
   async ({ project }) => {
-    if (!SONAR_HOST_URL || !SONAR_TOKEN) {
-      return {
-        content: [{ type: "text", text: "SONAR_HOST_URL / SONAR_TOKEN not configured" }],
-        isError: true,
-      };
-    }
-    const { dir } = resolveProject(project);
-    if (!existsSync(join(dir, "sonar-project.properties"))) {
-      return {
-        content: [{ type: "text", text: `no sonar-project.properties in "${project}"` }],
-        isError: true,
-      };
-    }
-    if (SONAR_CONTAINERS.length) {
-      try {
-        await wakeSonar({
-          hostUrl: SONAR_HOST_URL,
-          containers: SONAR_CONTAINERS,
-          timeoutMs: SONAR_WAKE_TIMEOUT_MS,
-          docker: (args) => runContainer(args, { timeoutMs: 60 * 1000 }),
-        });
-      } catch (err) {
-        return { content: [{ type: "text", text: err.message }], isError: true };
-      }
-    }
+    const { dir, error } = await sonarReady(project);
+    if (error) return error;
     const name = `devbox-sonar-${randomUUID()}`;
     const { code, output } = await runContainer([
       "run",
@@ -171,6 +175,29 @@ server.registerTool(
       "sonarsource/sonar-scanner-cli:latest",
     ]);
     return { content: [{ type: "text", text: output }], isError: code !== 0 };
+  }
+);
+
+server.registerTool(
+  "sonar_quality_gate",
+  {
+    description:
+      "Quality-gate status (OK/ERROR/NONE) and failing conditions of a project's latest " +
+      "SonarQube analysis. Analysis finishes after sonar_scan returns: if `pending` is true, " +
+      "the result is still the previous analysis; call again later. Starts SonarQube if asleep.",
+    inputSchema: { project: z.string() },
+  },
+  async ({ project }) => {
+    const { dir, error } = await sonarReady(project);
+    if (error) return error;
+    const key = projectKeyFrom(readFileSync(join(dir, "sonar-project.properties"), "utf8"));
+    if (!key) return toolError(`no sonar.projectKey in "${project}"'s sonar-project.properties`);
+    try {
+      const gate = await qualityGate({ hostUrl: SONAR_HOST_URL, token: SONAR_TOKEN, projectKey: key });
+      return { content: [{ type: "text", text: JSON.stringify(gate, null, 2) }] };
+    } catch (err) {
+      return toolError(err.message);
+    }
   }
 );
 
