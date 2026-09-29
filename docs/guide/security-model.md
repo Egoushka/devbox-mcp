@@ -78,7 +78,7 @@ The proxy decides by API section and method. It does not read the body of a cont
 - **Images by tag.** The toolchain images and `sonarsource/sonar-scanner-cli:latest` are tags, not digests. The comment in [src/toolchains.js](../../src/toolchains.js) says the repository names the toolchain and leaves supply-chain vetting to you, and no setting changes an image.
 - **The SonarQube token on a command line.** `sonar_scan` passes `-e SONAR_TOKEN=<token>` as a `docker run` argument, so the token shows in the process list, inside the devbox-mcp container and on its host, while a scan runs. It also sits in the scanner container's environment.
 - **Test output reaches the assistant.** Whatever the tests print, up to the last 20,000 characters, lands in the assistant's context.
-- **Availability.** One overlapping request crashes the server ([Status](status.md#one-request-at-a-time)), and a timeout kills the `docker run` client without stopping its container ([Run a test suite](run-tests.md#when-it-fails)).
+- **Availability.** devbox-mcp starts a container for each `run_tests` or `sonar_scan` call and sets no limit on how many run at once, and a call that a client cancels keeps its container until the command ends or times out ([Status](status.md#requests-during-a-tool-call)). Memory and CPU limits apply per container, so ten parallel calls get ten times the default `2g` and 2 CPUs.
 
 ## Reporting a vulnerability
 

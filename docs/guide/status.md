@@ -1,13 +1,13 @@
 ---
 title: "Status"
-description: "What works, what is partial and what is not built in devbox-mcp 0.5.0, with the test or file behind each, and the releases so far."
+description: "What works, what is partial and what is not built in devbox-mcp 0.6.0, with the test or file behind each, and the releases so far."
 order: 6
 section: "Project"
 ---
 
-Each row names its evidence. `works` means a test in this repository covers it. `partial` means part of it is missing, or the code does it and no test covers it. `not yet` means it does not exist. This page describes version 0.5.0.
+Each row names its evidence. `works` means a test in this repository covers it. `partial` means part of it is missing, or the code does it and no test covers it. `not yet` means it does not exist. This page describes version 0.6.0.
 
-The 21 tests run with `npm test` and need no Docker, SonarQube or network. The detection and projects-file tests build temporary directories, and the SonarQube tests pass in stand-ins for `docker`, `fetch` and the clock. No workflow runs them. [publish.yml](../../.github/workflows/publish.yml), the only workflow, builds and pushes the image and has no test step.
+The 25 tests run with `npm test` after `npm ci`, and need no Docker, SonarQube or network. The detection and projects-file tests build temporary directories, and the SonarQube tests pass in stand-ins for `docker`, `fetch` and the clock. The server tests start [src/index.js](../../src/index.js) on a free local port with a stand-in `docker` script first on `PATH`, and call it through the MCP SDK's client. No workflow runs them. [publish.yml](../../.github/workflows/publish.yml), the only workflow, builds and pushes the image and has no test step.
 
 ## Summary
 
@@ -18,10 +18,10 @@ The 21 tests run with `npm test` and need no Docker, SonarQube or network. The d
 | [Projects file](#projects-file) | works | [projects.test.js](../../test/projects.test.js) |
 | [Waking SonarQube](#waking-sonarqube) | works | [sonar-wake.test.js](../../test/sonar-wake.test.js) |
 | [Reading the quality gate](#reading-the-quality-gate) | works | [sonar-gate.test.js](../../test/sonar-gate.test.js) |
-| [`run_tests` in a one-shot container](#run_tests-in-a-one-shot-container) | partial | [src/index.js](../../src/index.js) |
+| [Requests during a tool call](#requests-during-a-tool-call) | works | [index.test.js](../../test/index.test.js) |
+| [`run_tests` in a one-shot container](#run_tests-in-a-one-shot-container) | partial | [index.test.js](../../test/index.test.js) |
 | [Names limited to `list_projects`](#names-limited-to-list_projects) | partial | [src/index.js](../../src/index.js) |
 | [`sonar_scan`](#sonar_scan) | partial | [src/index.js](../../src/index.js) |
-| [One request at a time](#one-request-at-a-time) | partial | [src/index.js](../../src/index.js) |
 | [Container image](#container-image) | partial | [publish.yml](../../.github/workflows/publish.yml) |
 | [Authentication](#authentication) | not yet | [src/index.js](../../src/index.js) |
 | [Network isolation for test runs](#network-isolation-for-test-runs) | not yet | [src/index.js](../../src/index.js) |
@@ -51,28 +51,25 @@ The 21 tests run with `npm test` and need no Docker, SonarQube or network. The d
 
 [test/sonar-gate.test.js](../../test/sonar-gate.test.js) runs against a fake SonarQube. The project key comes from `sonar-project.properties` in any separator style, and a commented-out key does not count. The result carries the gate, its conditions and the analysis it describes; a queued analysis reads as `pending`; SonarQube's own error message comes through; a refused token says what kind of token the gate needs. The tool handler that calls this code has no test.
 
+### Requests during a tool call
+
+Each `POST /mcp` gets its own `McpServer` and transport ([src/index.js](../../src/index.js)), so the server answers a request that arrives while a tool call runs. [test/index.test.js](../../test/index.test.js) holds a `run_tests` call open in a stand-in `docker`: a `tools/list` sent during the call gets its answer, and the call still returns its output. A client whose call times out posts `notifications/cancelled`, gets `202`, and goes on calling tools.
+
+The cancellation stops nothing. The server keeps no session, so the `McpServer` that receives the notification has no such call: the container runs until it exits or reaches its timeout, and its answer reaches a client that has given up. The same test waits for that late answer. Up to 0.5.0 the requests shared one `McpServer`, and any request during a tool call ended the process with `Already connected to a transport`.
+
 ## What is partial
 
 ### run_tests in a one-shot container
 
-The detection and limits that `run_tests` relies on have tests. The handler and its `docker run` arguments in [src/index.js](../../src/index.js) have none, and no test starts a container. The code also leaves these gaps:
-
-- The timeout kills the `docker run` client, not the container ([Run a test suite](run-tests.md#when-it-fails)).
-- The pytest command installs only `requirements.txt`, the npm command always runs Node.js 20, and the dotnet command names no solution ([Run a test suite](run-tests.md#what-a-project-needs)).
+The detection and limits that `run_tests` relies on have tests. [test/index.test.js](../../test/index.test.js) runs the handler against a stand-in `docker`: the result carries the command's output, a missing `docker` CLI gives an error result, and a run that reaches its timeout ends with `docker kill` on its container and a line that says so. No test checks the `docker run` arguments or starts a real container. The commands leave gaps too: the pytest command installs only `requirements.txt`, the npm command always runs Node.js 20, and the dotnet command names no solution ([Run a test suite](run-tests.md#what-a-project-needs)).
 
 ### Names limited to list_projects
 
-`resolveProject` in [src/index.js](../../src/index.js) accepts only a `name` from the current `list_projects` output, then checks that the joined path stays under `PROJECTS_ROOT`. No test calls it. [test/projects.test.js](../../test/projects.test.js) covers the projects file's side: `../etc` is not a plain directory name.
+`resolveProject` in [src/index.js](../../src/index.js) accepts only a `name` from the current `list_projects` output, then checks that the joined path stays under `PROJECTS_ROOT`. No test sends it an unknown name or a `../` path; [test/index.test.js](../../test/index.test.js) calls it with a listed one only. [test/projects.test.js](../../test/projects.test.js) covers the projects file's side: `../etc` is not a plain directory name.
 
 ### sonar_scan
 
 The wake has tests. The scanner run has none, and the repository records no scan that completed through `sonar_scan`. The scanner sees the checkout read-only, which matters for SonarScanner's working directory ([Scan with SonarQube](sonarqube.md#prepare-the-project)). The scan always runs with `2g`, 2 CPUs, `RUN_TIMEOUT_MS` and the `latest` scanner image.
-
-### One request at a time
-
-[src/index.js](../../src/index.js) creates a stateless transport for each `POST /mcp` and connects it to one shared `McpServer`. The SDK that [package-lock.json](../../package-lock.json) pins, 1.30.1, throws `Already connected to a transport` when `connect` runs while another transport is still open. The throw rejects the async Express 4 handler, nothing catches it, and Node.js ends the process. The running call and the new request both lose their answers.
-
-Requests in sequence work, because the end of each answer closes its transport and frees the server. To see the crash, send any request to `/mcp` while a `run_tests` call runs. A client built on the MCP TypeScript SDK sends one without being asked: when a request passes the SDK's default timeout of 60 seconds (`DEFAULT_REQUEST_TIMEOUT_MSEC`), the client posts `notifications/cancelled` for it. No test covers the transport.
 
 ### Container image
 
@@ -109,5 +106,6 @@ dotnet, npm and pytest are the only runners. The README invites pull requests fo
 | `v0.3.0` | `dc4cd87` | `.slnx` detection; .NET SDK image from `global.json` |
 | `v0.4.0` | `8acc271` | `PROJECTS_FILE` with per-project limits |
 | `v0.5.0` | `68457ed` | `sonar_quality_gate` |
+| `v0.6.0` | `703ae27` | requests during a tool call; `docker kill` on timeout |
 
 `v0.2.0` also brought SHA-pinned actions, Dependabot and SECURITY.md (#1). There is no changelog: the tags and their commit messages are the record. Each tag's image is `ghcr.io/egoushka/devbox-mcp:<version>`, and [SECURITY.md](../../SECURITY.md#supported-versions) supports only the latest image tag and the latest commit on `main`.

@@ -36,7 +36,7 @@ docker run -d --name devbox-mcp --network devbox \
   -e PROJECTS_ROOT=/srv/repos \
   -e DOCKER_HOST=tcp://docker-socket-proxy:2375 \
   -v /srv/repos:/srv/repos:ro \
-  ghcr.io/egoushka/devbox-mcp:0.5.0
+  ghcr.io/egoushka/devbox-mcp:0.6.0
 ```
 
 > [!IMPORTANT]
@@ -103,8 +103,8 @@ Point a client that speaks Streamable HTTP at `http://127.0.0.1:8000/mcp`. In Cl
 claude mcp add --transport http devbox http://127.0.0.1:8000/mcp
 ```
 
-> [!WARNING]
-> Send one request at a time. A request that reaches the server while a tool call runs crashes the process, and a client that times out a call and cancels it sends such a request ([Status](status.md#one-request-at-a-time)). Set your client's tool-call timeout above your slowest test suite.
+> [!IMPORTANT]
+> Set your client's tool-call timeout above your slowest test suite. A client built on the MCP TypeScript SDK gives up on a call after 60 seconds by default and cancels it, and the server cannot stop the run: the test container goes on until its command ends or it reaches `timeoutMs`, and the client never sees the result ([Status](status.md#requests-during-a-tool-call)).
 
 ## Run from a clone instead
 
@@ -115,6 +115,6 @@ npm ci
 PROJECTS_ROOT=/srv/repos DOCKER_HOST=tcp://127.0.0.1:2375 npm start
 ```
 
-Without a `docker` CLI on `PATH`, the first call that runs `docker` crashes the server, because `runContainer` handles no spawn error ([src/index.js](../../src/index.js)). The server listens on every interface: `app.listen(port)` names no host.
+Without a `docker` CLI on `PATH`, each call that runs `docker` fails with an error that contains `could not run docker: spawn docker ENOENT` ([src/index.js](../../src/index.js)). The server listens on every interface: `app.listen(port)` names no host.
 
 Next: [run a test suite](run-tests.md) or [scan with SonarQube](sonarqube.md).

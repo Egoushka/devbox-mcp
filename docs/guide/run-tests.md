@@ -77,8 +77,8 @@ The call returns when the container exits:
 - `isError` is `true` when the command exits non-zero. A failed restore and a failed test look the same from outside, so read the output.
 - devbox-mcp names the container `devbox-run-<uuid>`, and Docker removes it when it exits (`--rm`).
 
-> [!WARNING]
-> Keep the call alone. Another request while `run_tests` runs crashes the server, and that includes the cancellation a client sends when it times the call out ([Status](status.md#one-request-at-a-time)). Set the client's timeout above the project's `timeoutMs`.
+> [!NOTE]
+> Set the client's timeout above the project's `timeoutMs`. When the client times a call out first, the run goes on, cancelled or not: the container runs until it exits or reaches `timeoutMs`, and the client never sees the result ([Status](status.md#requests-during-a-tool-call)).
 
 ## When it fails
 
@@ -87,11 +87,12 @@ The call returns when the container exits:
 | `unknown project "<name>" — call list_projects first` | the name is not in the list | use a `name` from `list_projects` |
 | `no supported toolchain detected for "<name>"` | no marker at the root | set `toolchain` in the projects file |
 | `projects file: ...`, `ENOENT`, or a JSON error | a missing or invalid projects file | fix the file |
-| an error result cut off after `timeoutMs` | the timeout fired | raise `timeoutMs` |
+| an error result that ends with `devbox-mcp: timed out after <n>s` | the run reached `timeoutMs` | raise `timeoutMs` |
+| `could not run docker: spawn docker ENOENT` | no `docker` CLI on the server's `PATH` | run the image, or install the CLI |
 | `npm ci` complains about the lockfile | no usable `package-lock.json` | commit one |
 | `pytest: not found` | pytest is not in `requirements.txt` | add it |
 | the tests find no project files | `PROJECTS_ROOT` differs on the host | [mount at the same path](quickstart.md#start-devbox-mcp) |
 
 A directory can be missing from `list_projects` for three reasons: it is a symbolic link, since only real directories count; the projects file does not name it; or the file names it and the directory does not exist.
 
-On a timeout, devbox-mcp kills the `docker run` client with `SIGKILL` and returns what it has read, with no message that says it timed out (`runContainer` in [src/index.js](../../src/index.js)). It never calls `docker stop` or `docker kill`, and Docker keeps a container running after its client dies, so a timed-out container can go on until its command ends. Look for one with `docker ps --filter name=devbox-run-`.
+On a timeout, devbox-mcp kills the `docker run` client with `SIGKILL`, runs `docker kill` on the container's name, and returns what it has read with `devbox-mcp: timed out after <n>s` at the end (`runContainer` in [src/index.js](../../src/index.js)). Docker keeps a container running after its client dies; the `docker kill` stops it, and `--rm` removes it. If `docker kill` fails, the container runs until its command ends, and `docker ps --filter name=devbox-run-` lists it.

@@ -100,5 +100,6 @@ The comment on `SONAR_WAKE_TIMEOUT_MS` in [src/index.js](../../src/index.js) rec
 | `docker start <container> failed: ...` | fix `SONAR_CONTAINERS`, or set it empty |
 | `SonarQube at <url> not UP after <n>s ...` | check the server, or raise the timeout |
 | `SonarQube /api/...: ... (reading the gate needs ...)` | use a token allowed to call the web API |
+| scanner output that ends with `devbox-mcp: timed out after <n>s` | raise `RUN_TIMEOUT_MS`, or find what stalls the scan |
 
-Both tools follow the same rule as `run_tests`: one request at a time ([Status](status.md#one-request-at-a-time)).
+As with `run_tests`, a scan that a client cancels runs on until it exits or reaches `RUN_TIMEOUT_MS` ([Status](status.md#requests-during-a-tool-call)).
