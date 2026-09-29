@@ -27,6 +27,13 @@ const SONAR_CONTAINERS = (process.env.SONAR_CONTAINERS ?? "sonarqube-db-1,sonarq
 // A cold start measured 33s to UP; 180s leaves room for a busy host.
 const SONAR_WAKE_TIMEOUT_MS = Number(process.env.SONAR_WAKE_TIMEOUT_MS || 180 * 1000);
 const MAX_OUTPUT_CHARS = 20_000;
+// How many run_tests/sonar_scan containers may run at once. A call past the
+// limit is refused, not queued: a stateless server cannot cancel a queued call
+// whose client has given up, so it would still run, for nobody.
+const MAX_CONCURRENT_RUNS = Number(process.env.MAX_CONCURRENT_RUNS || 1);
+if (!Number.isInteger(MAX_CONCURRENT_RUNS) || MAX_CONCURRENT_RUNS < 1) {
+  throw new Error(`MAX_CONCURRENT_RUNS must be a positive integer, got "${process.env.MAX_CONCURRENT_RUNS}"`);
+}
 
 const DEFAULT_LIMITS = { timeoutMs: RUN_TIMEOUT_MS, memory: "2g", cpus: 2 };
 
@@ -75,6 +82,25 @@ function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS, name } = {}) {
 
 const toolError = (text) => ({ content: [{ type: "text", text }], isError: true });
 
+// The runs in progress: what each is and when it started, so a refusal can say
+// what to wait for.
+const runs = new Set();
+const runsFull = () => runs.size >= MAX_CONCURRENT_RUNS;
+
+// A run slot: a function that frees it, or null when the limit is reached.
+function takeRunSlot(what) {
+  if (runsFull()) return null;
+  const run = { what, since: Date.now() };
+  runs.add(run);
+  return () => runs.delete(run);
+}
+
+const busy = () =>
+  toolError(
+    `busy: ${[...runs].map((r) => `${r.what} (${Math.round((Date.now() - r.since) / 1000)}s)`).join(", ")} ` +
+      `already running, the limit of ${MAX_CONCURRENT_RUNS} (MAX_CONCURRENT_RUNS); call again when one finishes`
+  );
+
 // What both sonar tools need before talking to SonarQube: config, a known
 // project with a sonar-project.properties, and a server that is awake.
 // Returns { dir } or { error } (an MCP error result).
@@ -104,7 +130,7 @@ async function sonarReady(project) {
 // on a second, so one shared server could not take a request that arrived
 // while a tool call was running.
 function createServer() {
-  const server = new McpServer({ name: "devbox-mcp", version: "0.6.0" });
+  const server = new McpServer({ name: "devbox-mcp", version: "0.7.0" });
 
   server.registerTool(
     "list_projects",
@@ -136,6 +162,8 @@ function createServer() {
           isError: true,
         };
       }
+      const release = takeRunSlot(`run_tests ${project}`);
+      if (!release) return busy();
       const runner = RUNNERS[type];
       const name = `devbox-run-${randomUUID()}`;
       const { code, output } = await runContainer([
@@ -160,7 +188,7 @@ function createServer() {
         "sh",
         "-c",
         runner.cmd,
-      ], { timeoutMs, name });
+      ], { timeoutMs, name }).finally(release);
       return { content: [{ type: "text", text: output }], isError: code !== 0 };
     }
   );
@@ -175,8 +203,13 @@ function createServer() {
       inputSchema: { project: z.string() },
     },
     async ({ project }) => {
+      // Refused before the wake, which can take half a minute; checked again
+      // after it, since another run may have started meanwhile.
+      if (runsFull()) return busy();
       const { dir, error } = await sonarReady(project);
       if (error) return error;
+      const release = takeRunSlot(`sonar_scan ${project}`);
+      if (!release) return busy();
       const name = `devbox-sonar-${randomUUID()}`;
       const { code, output } = await runContainer([
         "run",
@@ -192,7 +225,7 @@ function createServer() {
         "-e",
         `SONAR_TOKEN=${SONAR_TOKEN}`,
         "sonarsource/sonar-scanner-cli:latest",
-      ], { name });
+      ], { name }).finally(release);
       return { content: [{ type: "text", text: output }], isError: code !== 0 };
     }
   );

@@ -1,13 +1,13 @@
 ---
 title: "Status"
-description: "What works, what is partial and what is not built in devbox-mcp 0.6.0, with the test or file behind each, and the releases so far."
+description: "What works, what is partial and what is not built in devbox-mcp 0.7.0, with the test or file behind each, and the releases so far."
 order: 6
 section: "Project"
 ---
 
-Each row names its evidence. `works` means a test in this repository covers it. `partial` means part of it is missing, or the code does it and no test covers it. `not yet` means it does not exist. This page describes version 0.6.0.
+Each row names its evidence. `works` means a test in this repository covers it. `partial` means part of it is missing, or the code does it and no test covers it. `not yet` means it does not exist. This page describes version 0.7.0.
 
-The 25 tests run with `npm test` after `npm ci`, and need no Docker, SonarQube or network. The detection and projects-file tests build temporary directories, and the SonarQube tests pass in stand-ins for `docker`, `fetch` and the clock. The server tests start [src/index.js](../../src/index.js) on a free local port with a stand-in `docker` script first on `PATH`, and call it through the MCP SDK's client. No workflow runs them. [publish.yml](../../.github/workflows/publish.yml), the only workflow, builds and pushes the image and has no test step.
+The 30 tests run with `npm test` after `npm ci`, and need no Docker, SonarQube or network. The detection and projects-file tests build temporary directories, and the SonarQube tests pass in stand-ins for `docker`, `fetch` and the clock. The server tests start [src/index.js](../../src/index.js) on a free local port with a stand-in `docker` script first on `PATH`, and call it through the MCP SDK's client. No workflow runs them. [publish.yml](../../.github/workflows/publish.yml), the only workflow, builds and pushes the image and has no test step.
 
 ## Summary
 
@@ -19,6 +19,7 @@ The 25 tests run with `npm test` after `npm ci`, and need no Docker, SonarQube o
 | [Waking SonarQube](#waking-sonarqube) | works | [sonar-wake.test.js](../../test/sonar-wake.test.js) |
 | [Reading the quality gate](#reading-the-quality-gate) | works | [sonar-gate.test.js](../../test/sonar-gate.test.js) |
 | [Requests during a tool call](#requests-during-a-tool-call) | works | [index.test.js](../../test/index.test.js) |
+| [A cap on concurrent runs](#a-cap-on-concurrent-runs) | works | [index.test.js](../../test/index.test.js) |
 | [`run_tests` in a one-shot container](#run_tests-in-a-one-shot-container) | partial | [index.test.js](../../test/index.test.js) |
 | [Names limited to `list_projects`](#names-limited-to-list_projects) | partial | [src/index.js](../../src/index.js) |
 | [`sonar_scan`](#sonar_scan) | partial | [src/index.js](../../src/index.js) |
@@ -57,6 +58,12 @@ Each `POST /mcp` gets its own `McpServer` and transport ([src/index.js](../../sr
 
 The cancellation stops nothing. The server keeps no session, so the `McpServer` that receives the notification has no such call: the container runs until it exits or reaches its timeout, and its answer reaches a client that has given up. The same test waits for that late answer. Up to 0.5.0 the requests shared one `McpServer`, and any request during a tool call ended the process with `Already connected to a transport`.
 
+### A cap on concurrent runs
+
+At most `MAX_CONCURRENT_RUNS` `run_tests` and `sonar_scan` containers run at once, 1 unless you set it ([src/index.js](../../src/index.js)). A call past the limit gets an error that starts `busy:` and names each run in progress with its age. Nothing queues: a stateless server could not cancel a queued call whose client gave up, so the call would still run, for nobody. A run keeps its slot until its container exits, a cancelled run included, so a retry after a client timeout gets `busy:` instead of starting a second copy.
+
+[test/index.test.js](../../test/index.test.js) checks the refusal and a freed slot taking the next call, two runs at once with `MAX_CONCURRENT_RUNS=2`, a `sonar_scan` holding a slot, a full cap refusing `sonar_scan` before its wake, a failed run giving its slot back, and a value that is not a whole number above 0 stopping the server at startup.
+
 ## What is partial
 
 ### run_tests in a one-shot container
@@ -69,7 +76,7 @@ The detection and limits that `run_tests` relies on have tests. [test/index.test
 
 ### sonar_scan
 
-The wake has tests. The scanner run has none, and the repository records no scan that completed through `sonar_scan`. The scanner sees the checkout read-only, which matters for SonarScanner's working directory ([Scan with SonarQube](sonarqube.md#prepare-the-project)). The scan always runs with `2g`, 2 CPUs, `RUN_TIMEOUT_MS` and the `latest` scanner image.
+The wake has tests, and [test/index.test.js](../../test/index.test.js) runs the tool against a stand-in `docker` for the run cap. No test checks the scanner's arguments or runs the real scanner, and the repository records no scan that completed through `sonar_scan`. The scanner sees the checkout read-only, which matters for SonarScanner's working directory ([Scan with SonarQube](sonarqube.md#prepare-the-project)). The scan always runs with `2g`, 2 CPUs, `RUN_TIMEOUT_MS` and the `latest` scanner image.
 
 ### Container image
 

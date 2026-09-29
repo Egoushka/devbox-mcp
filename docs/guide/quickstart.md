@@ -36,7 +36,7 @@ docker run -d --name devbox-mcp --network devbox \
   -e PROJECTS_ROOT=/srv/repos \
   -e DOCKER_HOST=tcp://docker-socket-proxy:2375 \
   -v /srv/repos:/srv/repos:ro \
-  ghcr.io/egoushka/devbox-mcp:0.6.0
+  ghcr.io/egoushka/devbox-mcp:0.7.0
 ```
 
 > [!IMPORTANT]
@@ -104,7 +104,7 @@ claude mcp add --transport http devbox http://127.0.0.1:8000/mcp
 ```
 
 > [!IMPORTANT]
-> Set your client's tool-call timeout above your slowest test suite. A client built on the MCP TypeScript SDK gives up on a call after 60 seconds by default and cancels it, and the server cannot stop the run: the test container goes on until its command ends or it reaches `timeoutMs`, and the client never sees the result ([Status](status.md#requests-during-a-tool-call)).
+> Set your client's tool-call timeout above your slowest test suite. A client built on the MCP TypeScript SDK gives up on a call after 60 seconds by default and cancels it, and the server cannot stop the run: the test container goes on until its command ends or it reaches `timeoutMs`, and the client never sees the result ([Status](status.md#requests-during-a-tool-call)). The run holds its slot meanwhile, so with the default of one slot, the next call gets `busy:`.
 
 ## Run from a clone instead
 

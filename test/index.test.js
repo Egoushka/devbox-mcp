@@ -34,13 +34,15 @@ function fixture(t) {
   const openGate = () => writeFileSync(join(tmp, "gate"), "");
   t.after(openGate);
   return {
-    // Empty counts as unset, so a PROJECTS_FILE or RUN_TIMEOUT_MS exported in
-    // the shell that runs the tests stays out of the server.
+    // Empty counts as unset, so a PROJECTS_FILE, RUN_TIMEOUT_MS or
+    // MAX_CONCURRENT_RUNS exported in the shell that runs the tests stays out of
+    // the server.
     env: {
       PATH: `${join(tmp, "bin")}:${process.env.PATH}`,
       PROJECTS_ROOT: join(tmp, "root"),
       PROJECTS_FILE: "",
       RUN_TIMEOUT_MS: "",
+      MAX_CONCURRENT_RUNS: "",
       FAKE_DOCKER_LOG: log,
       FAKE_DOCKER_GATE: join(tmp, "gate"),
     },
@@ -66,7 +68,8 @@ async function serve(t, env, transportOptions) {
   exited.catch(() => {});
   const call = (promise) => Promise.race([promise, exited]);
   const alive = () => child.exitCode === null && child.signalCode === null;
-  await call(until(() => /listening on :\d+/.test(output), "the server to listen"));
+  // Also stops when the server exits, so no poll outlives a failed start.
+  await call(until(() => !alive() || /listening on :\d+/.test(output), "the server to listen"));
   const url = new URL(`http://127.0.0.1:${/listening on :(\d+)/.exec(output)[1]}/mcp`);
 
   const client = new Client({ name: "devbox-test", version: "0.0.0" });
@@ -139,6 +142,9 @@ test("without a docker CLI on PATH, run_tests is an error result, not a crash", 
   const result = await s.call(s.client.callTool(runTests));
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /^could not run docker: spawn docker ENOENT/);
+  // The failed run gave its slot back: the next call fails the same way, not as busy.
+  const again = await s.call(s.client.callTool(runTests));
+  assert.match(again.content[0].text, /^could not run docker/);
   assert.ok(s.alive(), s.output());
 });
 
@@ -150,4 +156,84 @@ test("a run that hits its timeout is killed by container name and says so", asyn
   assert.match(result.content[0].text, /devbox-mcp: timed out after 0\.3s$/);
   const [, name] = /--name (devbox-run-[0-9a-f-]+) /.exec(f.dockerLog());
   await until(() => f.dockerLog().includes(`kill ${name}\n`), `docker kill ${name}`);
+});
+
+const runs = (f) => (f.dockerLog().match(/^run /gm) ?? []).length;
+const sonarScan = { name: "sonar_scan", arguments: { project: "app" } };
+// A refusal comes back at once; without the cap the call would wait on the gate.
+const refusedCall = (s, tool) => s.call(s.client.callTool(tool, undefined, { timeout: 5000 }));
+
+test("a run past MAX_CONCURRENT_RUNS (default 1) is refused, and a freed slot takes the next", async (t) => {
+  const f = fixture(t);
+  const s = await serve(t, f.env);
+  const first = s.call(s.client.callTool(runTests));
+  await until(() => runs(f) === 1, "docker run");
+
+  const second = await refusedCall(s, runTests);
+  assert.equal(second.isError, true);
+  assert.match(
+    second.content[0].text,
+    /^busy: run_tests app \(\d+s\) already running, the limit of 1 \(MAX_CONCURRENT_RUNS\); call again when one finishes$/
+  );
+  assert.equal(runs(f), 1);
+
+  f.openGate();
+  assert.equal((await first).isError, false);
+  assert.equal((await s.call(s.client.callTool(runTests))).isError, false);
+  assert.equal(runs(f), 2);
+});
+
+test("MAX_CONCURRENT_RUNS=2 runs two at once and refuses a third", async (t) => {
+  const f = fixture(t);
+  const s = await serve(t, { ...f.env, MAX_CONCURRENT_RUNS: "2" });
+  const both = [s.call(s.client.callTool(runTests)), s.call(s.client.callTool(runTests))];
+  await until(() => runs(f) === 2, "two docker runs");
+
+  const third = await refusedCall(s, runTests);
+  assert.match(third.content[0].text, /^busy: run_tests app \(\d+s\), run_tests app \(\d+s\) already running, the limit of 2 /);
+  f.openGate();
+  for (const result of await Promise.all(both)) assert.equal(result.isError, false);
+});
+
+test("a sonar_scan holds a run slot too", async (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.env.PROJECTS_ROOT, "app", "sonar-project.properties"), "sonar.projectKey=app\n");
+  const s = await serve(t, { ...f.env, SONAR_HOST_URL: "http://127.0.0.1:9", SONAR_TOKEN: "t", SONAR_CONTAINERS: "" });
+  const scan = s.call(s.client.callTool(sonarScan));
+  await until(() => runs(f) === 1, "docker run");
+
+  const tests = await refusedCall(s, runTests);
+  assert.match(tests.content[0].text, /^busy: sonar_scan app \(\d+s\) already running/);
+  f.openGate();
+  assert.equal((await scan).isError, false);
+});
+
+test("a full cap refuses sonar_scan before it wakes SonarQube", async (t) => {
+  const f = fixture(t);
+  writeFileSync(join(f.env.PROJECTS_ROOT, "app", "sonar-project.properties"), "sonar.projectKey=app\n");
+  const s = await serve(t, {
+    ...f.env,
+    SONAR_HOST_URL: "http://127.0.0.1:9",
+    SONAR_TOKEN: "t",
+    SONAR_CONTAINERS: "sonar-db",
+    SONAR_WAKE_TIMEOUT_MS: "1",
+  });
+  const run = s.call(s.client.callTool(runTests));
+  await until(() => runs(f) === 1, "docker run");
+
+  const scan = await refusedCall(s, sonarScan);
+  assert.match(scan.content[0].text, /^busy: run_tests app \(\d+s\) already running/);
+  assert.doesNotMatch(f.dockerLog(), /^start /m);
+  f.openGate();
+  assert.equal((await run).isError, false);
+});
+
+test("a MAX_CONCURRENT_RUNS that is not a positive integer stops the server at startup", async (t) => {
+  const f = fixture(t);
+  for (const bad of ["two", "0", "1.5"]) {
+    await assert.rejects(
+      serve(t, { ...f.env, MAX_CONCURRENT_RUNS: bad }),
+      new RegExp(`server exited with 1:[\\s\\S]*MAX_CONCURRENT_RUNS must be a positive integer, got "${bad}"`)
+    );
+  }
 });
