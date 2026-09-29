@@ -114,5 +114,6 @@ dotnet, npm and pytest are the only runners. The README invites pull requests fo
 | `v0.4.0` | `8acc271` | `PROJECTS_FILE` with per-project limits |
 | `v0.5.0` | `68457ed` | `sonar_quality_gate` |
 | `v0.6.0` | `703ae27` | requests during a tool call; `docker kill` on timeout |
+| `v0.7.0` | `32c9828` | a cap on concurrent runs, `MAX_CONCURRENT_RUNS` |
 
 `v0.2.0` also brought SHA-pinned actions, Dependabot and SECURITY.md (#1). There is no changelog: the tags and their commit messages are the record. Each tag's image is `ghcr.io/egoushka/devbox-mcp:<version>`, and [SECURITY.md](../../SECURITY.md#supported-versions) supports only the latest image tag and the latest commit on `main`.
