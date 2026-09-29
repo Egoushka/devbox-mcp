@@ -1,0 +1,113 @@
+---
+title: "Status"
+description: "What works, what is partial and what is not built in devbox-mcp 0.5.0, with the test or file behind each, and the releases so far."
+order: 6
+section: "Project"
+---
+
+Each row names its evidence. `works` means a test in this repository covers it. `partial` means part of it is missing, or the code does it and no test covers it. `not yet` means it does not exist. This page describes version 0.5.0.
+
+The 21 tests run with `npm test` and need no Docker, SonarQube or network. The detection and projects-file tests build temporary directories, and the SonarQube tests pass in stand-ins for `docker`, `fetch` and the clock. No workflow runs them. [publish.yml](../../.github/workflows/publish.yml), the only workflow, builds and pushes the image and has no test step.
+
+## Summary
+
+| Capability | Status | Evidence |
+|---|---|---|
+| [Toolchain detection](#toolchain-detection) | works | [toolchains.test.js](../../test/toolchains.test.js) |
+| [.NET SDK image from `global.json`](#net-sdk-image-from-globaljson) | works | [toolchains.test.js](../../test/toolchains.test.js) |
+| [Projects file](#projects-file) | works | [projects.test.js](../../test/projects.test.js) |
+| [Waking SonarQube](#waking-sonarqube) | works | [sonar-wake.test.js](../../test/sonar-wake.test.js) |
+| [Reading the quality gate](#reading-the-quality-gate) | works | [sonar-gate.test.js](../../test/sonar-gate.test.js) |
+| [`run_tests` in a one-shot container](#run_tests-in-a-one-shot-container) | partial | [src/index.js](../../src/index.js) |
+| [Names limited to `list_projects`](#names-limited-to-list_projects) | partial | [src/index.js](../../src/index.js) |
+| [`sonar_scan`](#sonar_scan) | partial | [src/index.js](../../src/index.js) |
+| [One request at a time](#one-request-at-a-time) | partial | [src/index.js](../../src/index.js) |
+| [Container image](#container-image) | partial | [publish.yml](../../.github/workflows/publish.yml) |
+| [Authentication](#authentication) | not yet | [src/index.js](../../src/index.js) |
+| [Network isolation for test runs](#network-isolation-for-test-runs) | not yet | [src/index.js](../../src/index.js) |
+| [Images pinned by digest](#images-pinned-by-digest) | not yet | [src/toolchains.js](../../src/toolchains.js) |
+| [Other toolchains](#other-toolchains) | not yet | [README](../../README.md#scope--non-goals-v1) |
+| [Tests in CI](#tests-in-ci) | not yet | [publish.yml](../../.github/workflows/publish.yml) |
+
+## What works
+
+### Toolchain detection
+
+[test/toolchains.test.js](../../test/toolchains.test.js) checks that a `.slnx`, `.sln` or `.csproj` detects as `dotnet` and that a checkout with no marker has no toolchain. [test/projects.test.js](../../test/projects.test.js) sees `package.json` detect as `npm`. The pytest markers have no test of their own.
+
+### .NET SDK image from global.json
+
+[test/toolchains.test.js](../../test/toolchains.test.js): `10.0.100` gives `sdk:10.0`; a missing file, a file that is not JSON, or one without `sdk.version` gives `sdk:8.0`; a version that is not digits never reaches the image tag. Commit `dc4cd87` (#12) gives the reason: an SDK image carries only its own runtime, so `sdk:8.0` cannot run a `net10.0` test project.
+
+### Projects file
+
+[test/projects.test.js](../../test/projects.test.js) covers six cases. Without a file, every directory is a project. With one, only the listed projects come back, and a listed project with no checkout drops out. Per-project keys override the defaults and detection. A missing or malformed file refuses instead of listing everything. Entries fail validation before any value reaches `docker run`, including `../etc`, `"2g --privileged"`, an unknown key and the toolchain name `constructor`.
+
+### Waking SonarQube
+
+[test/sonar-wake.test.js](../../test/sonar-wake.test.js) drives the loop with a fake Docker, `fetch` and clock. A server already `UP` gets one start per container, database first. A cold start polls through a refused connection and `STARTING`, repeating the starts each round. A server that never reaches `UP` fails after 180 seconds and 37 polls, naming the last status. A failing `docker start` fails at once with Docker's output.
+
+### Reading the quality gate
+
+[test/sonar-gate.test.js](../../test/sonar-gate.test.js) runs against a fake SonarQube. The project key comes from `sonar-project.properties` in any separator style, and a commented-out key does not count. The result carries the gate, its conditions and the analysis it describes; a queued analysis reads as `pending`; SonarQube's own error message comes through; a refused token says what kind of token the gate needs. The tool handler that calls this code has no test.
+
+## What is partial
+
+### run_tests in a one-shot container
+
+The detection and limits that `run_tests` relies on have tests. The handler and its `docker run` arguments in [src/index.js](../../src/index.js) have none, and no test starts a container. The code also leaves these gaps:
+
+- The timeout kills the `docker run` client, not the container ([Run a test suite](run-tests.md#when-it-fails)).
+- The pytest command installs only `requirements.txt`, the npm command always runs Node.js 20, and the dotnet command names no solution ([Run a test suite](run-tests.md#what-a-project-needs)).
+
+### Names limited to list_projects
+
+`resolveProject` in [src/index.js](../../src/index.js) accepts only a `name` from the current `list_projects` output, then checks that the joined path stays under `PROJECTS_ROOT`. No test calls it. [test/projects.test.js](../../test/projects.test.js) covers the projects file's side: `../etc` is not a plain directory name.
+
+### sonar_scan
+
+The wake has tests. The scanner run has none, and the repository records no scan that completed through `sonar_scan`. The scanner sees the checkout read-only, which matters for SonarScanner's working directory ([Scan with SonarQube](sonarqube.md#prepare-the-project)). The scan always runs with `2g`, 2 CPUs, `RUN_TIMEOUT_MS` and the `latest` scanner image.
+
+### One request at a time
+
+[src/index.js](../../src/index.js) creates a stateless transport for each `POST /mcp` and connects it to one shared `McpServer`. The SDK that [package-lock.json](../../package-lock.json) pins, 1.30.1, throws `Already connected to a transport` when `connect` runs while another transport is still open. The throw rejects the async Express 4 handler, nothing catches it, and Node.js ends the process. The running call and the new request both lose their answers.
+
+Requests in sequence work, because the end of each answer closes its transport and frees the server. To see the crash, send any request to `/mcp` while a `run_tests` call runs. A client built on the MCP TypeScript SDK sends one without being asked: when a request passes the SDK's default timeout of 60 seconds (`DEFAULT_REQUEST_TIMEOUT_MSEC`), the client posts `notifications/cancelled` for it. No test covers the transport.
+
+### Container image
+
+[publish.yml](../../.github/workflows/publish.yml) builds and pushes the image on every push to `main`, as `latest`, and on every `v*` tag, as the version without the `v`. It sets no `platforms`, so the image is `linux/amd64` only. Its actions are pinned to commit SHAs, and [dependabot.yml](../../.github/dependabot.yml) updates them, the npm dependencies and the base image weekly. No workflow starts the image. The message of commit `90b4f5d` (#10) records one check by hand: a built image answered `/healthz` on Node.js 24.21.0.
+
+## What is missing
+
+### Authentication
+
+[src/index.js](../../src/index.js) checks no credentials on `/mcp`. The README's answer is to keep the server on a private network.
+
+### Network isolation for test runs
+
+Test containers keep Docker's default network. The comment on the `run_tests` handler in [src/index.js](../../src/index.js) explains that package restore needs a registry, and names an egress-only proxy as the way to narrow it if that becomes a problem.
+
+### Images pinned by digest
+
+The toolchain images in [src/toolchains.js](../../src/toolchains.js) and the scanner image in [src/index.js](../../src/index.js) are tags. The comment in `src/toolchains.js` says the repository names the toolchain and does not vet supply-chain trust. No setting overrides an image.
+
+### Other toolchains
+
+dotnet, npm and pytest are the only runners. The README invites pull requests for more ([README](../../README.md#scope--non-goals-v1)).
+
+### Tests in CI
+
+[publish.yml](../../.github/workflows/publish.yml) is the only workflow, and it runs no tests. The tests run when someone types `npm test`.
+
+## Releases
+
+| Tag | Commit | Added |
+|---|---|---|
+| `v0.1.0` | `86c933e` | `list_projects`, `run_tests`, `sonar_scan`, `/healthz` |
+| `v0.2.0` | `7fe7908` | SonarQube wake; Node.js 24 image built from the lockfile |
+| `v0.3.0` | `dc4cd87` | `.slnx` detection; .NET SDK image from `global.json` |
+| `v0.4.0` | `8acc271` | `PROJECTS_FILE` with per-project limits |
+| `v0.5.0` | `68457ed` | `sonar_quality_gate` |
+
+`v0.2.0` also brought SHA-pinned actions, Dependabot and SECURITY.md (#1). There is no changelog: the tags and their commit messages are the record. Each tag's image is `ghcr.io/egoushka/devbox-mcp:<version>`, and [SECURITY.md](../../SECURITY.md#supported-versions) supports only the latest image tag and the latest commit on `main`.
