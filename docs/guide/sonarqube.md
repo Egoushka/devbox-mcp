@@ -44,7 +44,7 @@ Call `sonar_scan` with a project name from `list_projects`. It runs three steps:
 2. The wake, unless `SONAR_CONTAINERS` is empty ([how it works](#how-the-wake-works)).
 3. `docker run --rm --memory=2g --cpus=2` of `sonarsource/sonar-scanner-cli:latest`, with the checkout at `/usr/src:ro` and `SONAR_HOST_URL` and `SONAR_TOKEN` in its environment.
 
-The text of the result is the scanner's output, the last 20,000 characters, and `isError` is `true` when the scanner exits non-zero. The scan uses `RUN_TIMEOUT_MS`; the projects file's limits do not apply to it.
+The text of the result is the scanner's output, the last 20,000 characters, and `isError` is `true` when the scanner exits non-zero. The scan uses `RUN_TIMEOUT_MS`; the projects file's limits do not apply to it. It counts against `MAX_CONCURRENT_RUNS` like a `run_tests` call: when the limit is reached, the call returns `busy:` before the wake, and again after it if another run started meanwhile ([Status](status.md#a-cap-on-concurrent-runs)).
 
 ## Read the quality gate
 
@@ -101,5 +101,6 @@ The comment on `SONAR_WAKE_TIMEOUT_MS` in [src/index.js](../../src/index.js) rec
 | `SonarQube at <url> not UP after <n>s ...` | check the server, or raise the timeout |
 | `SonarQube /api/...: ... (reading the gate needs ...)` | use a token allowed to call the web API |
 | scanner output that ends with `devbox-mcp: timed out after <n>s` | raise `RUN_TIMEOUT_MS`, or find what stalls the scan |
+| `busy: ... already running, the limit of <n> (MAX_CONCURRENT_RUNS); ...` | call again when the run finishes, or raise `MAX_CONCURRENT_RUNS` |
 
-As with `run_tests`, a scan that a client cancels runs on until it exits or reaches `RUN_TIMEOUT_MS` ([Status](status.md#requests-during-a-tool-call)).
+As with `run_tests`, a scan that a client cancels runs on, holding its slot, until it exits or reaches `RUN_TIMEOUT_MS` ([Status](status.md#requests-during-a-tool-call)).

@@ -43,6 +43,7 @@ Runs the project's test command in a one-shot container ([Containers](#container
 | `unknown project "<name>" — call list_projects first` | `<name>` is not in the `list_projects` output |
 | `no supported toolchain detected for "<name>"` | the project's `type` is `null` |
 | `could not run docker: <reason>` | the docker CLI did not start, such as `spawn docker ENOENT` when it is not on `PATH` |
+| `busy: <runs> already running, the limit of <n> (MAX_CONCURRENT_RUNS); call again when one finishes` | `MAX_CONCURRENT_RUNS` runs are in progress; `<runs>` lists each as `<tool> <project> (<age>s)` |
 
 A projects file error comes back as it does from `list_projects`.
 
@@ -58,6 +59,7 @@ Checks the configuration and the project, wakes SonarQube unless `SONAR_CONTAINE
 | `docker start <container> failed: <output>` | a start in the wake failed |
 | `SonarQube at <url> not UP after <n>s (last: <last>)` | the wake timed out |
 | `could not run docker: <reason>` | as for `run_tests`; in the wake it follows `docker start <container> failed:` |
+| `busy: ...` | as for `run_tests`, checked before the wake and again before the scan |
 
 A projects file error comes back here too, since the project lookup reads the file.
 
@@ -93,7 +95,7 @@ Besides the configuration, project and wake errors of `sonar_scan`:
 
 `POST /mcp` needs `Content-Type: application/json` and an `Accept` header that lists both `application/json` and `text/event-stream`. Without them, the MCP SDK's transport answers `415` or `406`. A notification gets `202` and no body.
 
-The transport is stateless (`sessionIdGenerator: undefined` in [src/index.js](../../src/index.js)): it issues no `Mcp-Session-Id`, needs no `initialize` before other requests, and has no `GET /mcp` stream, which answers `404`. `initialize` reports the server as `devbox-mcp`, version `0.6.0`, with the `tools` capability. The server listens on `PORT` on every interface and checks no credentials.
+The transport is stateless (`sessionIdGenerator: undefined` in [src/index.js](../../src/index.js)): it issues no `Mcp-Session-Id`, needs no `initialize` before other requests, and has no `GET /mcp` stream, which answers `404`. `initialize` reports the server as `devbox-mcp`, version `0.7.0`, with the `tools` capability. The server listens on `PORT` on every interface and checks no credentials.
 
 Each request gets its own `McpServer` and transport, so the server answers a request that arrives while a tool call runs ([test/index.test.js](../../test/index.test.js)). A `notifications/cancelled` gets `202` and cancels nothing: the server that receives it has no such call ([Status](status.md#requests-during-a-tool-call)). An exception in the `POST /mcp` route answers `500`, with the JSON-RPC error `-32603` `Internal server error` and `id: null`, when no response has started ([src/index.js](../../src/index.js)).
 
@@ -105,13 +107,14 @@ Each request gets its own `McpServer` and transport, so the server answers a req
 | `PROJECTS_FILE` | unset | the projects file; unset, every directory is a project |
 | `DOCKER_HOST` | the docker CLI's default | where the docker CLI sends API calls: the proxy |
 | `RUN_TIMEOUT_MS` | `600000` | default `run_tests` timeout; the `sonar_scan` timeout |
+| `MAX_CONCURRENT_RUNS` | `1` | how many `run_tests` and `sonar_scan` containers run at once |
 | `SONAR_HOST_URL` | unset | SonarQube's URL, reachable by address |
 | `SONAR_TOKEN` | unset | the token for the scanner and the web API |
 | `SONAR_CONTAINERS` | `sonarqube-db-1,sonarqube-sonarqube-1` | containers to start, in order, before a SonarQube call |
 | `SONAR_WAKE_TIMEOUT_MS` | `180000` | how long to wait for SonarQube to report `UP` |
 | `PORT` | `8000` | the HTTP port; the image sets `8000` too |
 
-devbox-mcp itself never reads `DOCKER_HOST`: the docker CLI it spawns inherits the environment and reads it. devbox-mcp reads the other variables once at startup ([src/index.js](../../src/index.js)), and the projects file they point to on every call. `PROJECTS_ROOT` becomes an absolute path. An empty value counts as unset, except for `SONAR_CONTAINERS`, where an empty string turns the wake off. `SONAR_CONTAINERS` is a comma-separated list; the timeouts are milliseconds.
+devbox-mcp itself never reads `DOCKER_HOST`: the docker CLI it spawns inherits the environment and reads it. devbox-mcp reads the other variables once at startup ([src/index.js](../../src/index.js)), and the projects file they point to on every call. `PROJECTS_ROOT` becomes an absolute path. An empty value counts as unset, except for `SONAR_CONTAINERS`, where an empty string turns the wake off. `SONAR_CONTAINERS` is a comma-separated list; the timeouts are milliseconds. `MAX_CONCURRENT_RUNS` has to be a whole number of at least 1; any other value stops the server at startup with `MAX_CONCURRENT_RUNS must be a positive integer`.
 
 ## Projects file
 
@@ -195,6 +198,8 @@ Neither container gets `--privileged`, `--network`, an added capability, or a mo
 
 On a timeout, devbox-mcp sends `SIGKILL` to the `docker run` process, runs `docker kill <name>`, and returns the output it has so far followed by `devbox-mcp: timed out after <n>s`. A `docker start` in the wake that passes its 60 seconds gets the `SIGKILL` alone.
 
+At most `MAX_CONCURRENT_RUNS` of these containers run at once, across both tools. A call takes its slot just before `docker run` and frees it when the `docker run` process exits, after a timeout too. A call past the limit starts no container and gets `busy:`.
+
 ## Fixed limits
 
 | Limit | Value | Where |
@@ -214,4 +219,4 @@ On a timeout, devbox-mcp sends `SIGKILL` to the `docker run` process, runs `dock
 | `npm start` | runs `node src/index.js` |
 | `npm test` | runs `node --test` over `test/` |
 
-The 25 tests need `npm ci` first, and no Docker, SonarQube or network. Four, in [test/index.test.js](../../test/index.test.js), start `src/index.js` on a free port with a stand-in `docker` script first on `PATH` and call it with the MCP SDK's client. The other 21 import `src/projects.js`, `src/toolchains.js`, `src/sonar-gate.js` and `src/sonar-wake.js`, which use nothing outside Node.js. The runtime dependencies are `@modelcontextprotocol/sdk`, `express` and `zod` ([package.json](../../package.json)).
+The 30 tests need `npm ci` first, and no Docker, SonarQube or network. Nine, in [test/index.test.js](../../test/index.test.js), start `src/index.js` on a free port with a stand-in `docker` script first on `PATH` and call it with the MCP SDK's client. The other 21 import `src/projects.js`, `src/toolchains.js`, `src/sonar-gate.js` and `src/sonar-wake.js`, which use nothing outside Node.js. The runtime dependencies are `@modelcontextprotocol/sdk`, `express` and `zod` ([package.json](../../package.json)).

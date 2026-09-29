@@ -76,9 +76,10 @@ The call returns when the container exits:
 - The text is the last 20,000 characters of stdout and stderr together, so a long log loses its beginning.
 - `isError` is `true` when the command exits non-zero. A failed restore and a failed test look the same from outside, so read the output.
 - devbox-mcp names the container `devbox-run-<uuid>`, and Docker removes it when it exits (`--rm`).
+- At most `MAX_CONCURRENT_RUNS` runs go at once, 1 unless you set it, counting `sonar_scan`. A call past that returns at once with `busy:` and the runs in progress ([Status](status.md#a-cap-on-concurrent-runs)).
 
 > [!NOTE]
-> Set the client's timeout above the project's `timeoutMs`. When the client times a call out first, the run goes on, cancelled or not: the container runs until it exits or reaches `timeoutMs`, and the client never sees the result ([Status](status.md#requests-during-a-tool-call)).
+> Set the client's timeout above the project's `timeoutMs`. When the client times a call out first, the run goes on, cancelled or not: the container runs until it exits or reaches `timeoutMs`, and the client never sees the result ([Status](status.md#requests-during-a-tool-call)). The run holds its slot meanwhile, so a retry gets `busy:`.
 
 ## When it fails
 
@@ -89,6 +90,7 @@ The call returns when the container exits:
 | `projects file: ...`, `ENOENT`, or a JSON error | a missing or invalid projects file | fix the file |
 | an error result that ends with `devbox-mcp: timed out after <n>s` | the run reached `timeoutMs` | raise `timeoutMs` |
 | `could not run docker: spawn docker ENOENT` | no `docker` CLI on the server's `PATH` | run the image, or install the CLI |
+| `busy: run_tests <name> (<n>s) already running, ...` | `MAX_CONCURRENT_RUNS` runs are in progress | call again when one finishes, or raise `MAX_CONCURRENT_RUNS` |
 | `npm ci` complains about the lockfile | no usable `package-lock.json` | commit one |
 | `pytest: not found` | pytest is not in `requirements.txt` | add it |
 | the tests find no project files | `PROJECTS_ROOT` differs on the host | [mount at the same path](quickstart.md#start-devbox-mcp) |

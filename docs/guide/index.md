@@ -1,6 +1,6 @@
 ---
 title: "Overview"
-description: "What devbox-mcp is, how a tool call runs, what it leaves out, and where version 0.6.0 stands."
+description: "What devbox-mcp is, how a tool call runs, what it leaves out, and where version 0.7.0 stands."
 order: 0
 section: "Get started"
 ---
@@ -41,9 +41,10 @@ The README lists four non-goals: no arbitrary path execution, no write access to
 
 ## Current status
 
-- **Version 0.6.0**, the latest tag. A push to `main` publishes the image `ghcr.io/egoushka/devbox-mcp:latest`, and each tag publishes its version, such as `0.6.0` ([publish.yml](../../.github/workflows/publish.yml)).
-- **Tested in parts.** 25 tests cover toolchain detection, the projects file, the SonarQube wake, the gate reader, and the HTTP transport with `run_tests` behind a stand-in `docker`. No test starts a real container or checks the `docker run` arguments, and the two SonarQube tool handlers have none.
+- **Version 0.7.0**, the latest tag. A push to `main` publishes the image `ghcr.io/egoushka/devbox-mcp:latest`, and each tag publishes its version, such as `0.7.0` ([publish.yml](../../.github/workflows/publish.yml)).
+- **Tested in parts.** 30 tests cover toolchain detection, the projects file, the SonarQube wake, the gate reader, the HTTP transport and the run cap, with `run_tests` and `sonar_scan` behind a stand-in `docker`. No test starts a real container or checks the `docker run` arguments, and the `sonar_quality_gate` handler has none.
 - **A cancelled call runs on.** The server answers a request that arrives during a tool call, but it cannot stop a call that a client cancels: the container runs until its command ends or its timeout kills it ([Status](status.md#requests-during-a-tool-call)).
+- **One run at a time by default.** `run_tests` and `sonar_scan` share `MAX_CONCURRENT_RUNS` slots, 1 unless you set it. A call past the limit returns `busy:` at once instead of waiting ([Status](status.md#a-cap-on-concurrent-runs)).
 
 ## Where to go next
 

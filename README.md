@@ -69,6 +69,7 @@ expose beyond a private network.
 | `SONAR_CONTAINERS` | `sonarqube-db-1,sonarqube-sonarqube-1` | Containers `sonar_scan` starts, in this order, before scanning. Set it empty to skip the wake when SonarQube is always on or not in this Docker host |
 | `SONAR_WAKE_TIMEOUT_MS` | `180000` | How long `sonar_scan` waits for SonarQube to report `UP` before failing |
 | `RUN_TIMEOUT_MS` | `600000` | Kill switch per container run |
+| `MAX_CONCURRENT_RUNS` | `1` | How many `run_tests` and `sonar_scan` containers run at once. A call past it gets an error that starts `busy:` and names what is running; nothing queues |
 | `PORT` | `8000` | HTTP port (Streamable HTTP MCP transport, path `/mcp`) |
 
 ## Allowlist and per-project limits
