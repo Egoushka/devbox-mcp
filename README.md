@@ -54,6 +54,7 @@ expose beyond a private network.
 | Env var | Default | Meaning |
 |---|---|---|
 | `PROJECTS_ROOT` | `/srv/chargehand/repos` | Directory of project checkouts to operate on |
+| `PROJECTS_FILE` | — | Optional allowlist (below). Unset: every directory under `PROJECTS_ROOT` is a project |
 | `DOCKER_HOST` | (docker default) | Point at your docker-socket-proxy, e.g. `tcp://docker-socket-proxy:2375` |
 | `SONAR_HOST_URL` | — | Your SonarQube server, reachable **by address**, not by a Docker Compose service name — the scan runs in its own one-shot container on the default bridge network, not your SonarQube stack's network |
 | `SONAR_TOKEN` | — | SonarQube user/analysis token |
@@ -61,6 +62,29 @@ expose beyond a private network.
 | `SONAR_WAKE_TIMEOUT_MS` | `180000` | How long `sonar_scan` waits for SonarQube to report `UP` before failing |
 | `RUN_TIMEOUT_MS` | `600000` | Kill switch per container run |
 | `PORT` | `8000` | HTTP port (Streamable HTTP MCP transport, path `/mcp`) |
+
+## Allowlist and per-project limits
+
+Set `PROJECTS_FILE` and only the projects it names are listed and runnable, so
+a checkout that appears under `PROJECTS_ROOT` is not runnable until someone adds
+it:
+
+```json
+{
+  "projects": {
+    "chargehand": { "timeoutMs": 900000 },
+    "some-app": { "toolchain": "npm", "memory": "3g", "cpus": 1.5 }
+  }
+}
+```
+
+Every key is optional: `toolchain` overrides detection, and `timeoutMs`,
+`memory` (Docker's `2g`/`1536m`) and `cpus` override `run_tests`' defaults
+(`RUN_TIMEOUT_MS`, `2g`, `2`) for that project's container. The file is read on
+every call, so an edit applies without a restart. A missing or malformed file
+refuses every call rather than falling back to listing everything. Mount its
+directory, not the file: a single-file bind mount keeps the old inode after a
+`git pull` replaces the file.
 
 ## Running
 

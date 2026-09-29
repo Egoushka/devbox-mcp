@@ -1,6 +1,6 @@
 {
   "name": "devbox-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server that runs a project's real test suite and SonarQube scans in throwaway containers",
   "type": "module",
   "main": "src/index.js",

@@ -1,5 +1,5 @@
 import express from "express";
-import { readdirSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -7,9 +7,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import { wakeSonar } from "./sonar-wake.js";
-import { RUNNERS, detectType } from "./toolchains.js";
+import { RUNNERS } from "./toolchains.js";
+import { listProjects as listProjectsIn } from "./projects.js";
 
 const PROJECTS_ROOT = resolve(process.env.PROJECTS_ROOT || "/srv/chargehand/repos");
+// Optional allowlist with per-project limits (src/projects.js). Unset: every
+// directory under PROJECTS_ROOT, as before.
+const PROJECTS_FILE = process.env.PROJECTS_FILE || "";
 const SONAR_HOST_URL = process.env.SONAR_HOST_URL || "";
 const SONAR_TOKEN = process.env.SONAR_TOKEN || "";
 const RUN_TIMEOUT_MS = Number(process.env.RUN_TIMEOUT_MS || 10 * 60 * 1000);
@@ -23,13 +27,10 @@ const SONAR_CONTAINERS = (process.env.SONAR_CONTAINERS ?? "sonarqube-db-1,sonarq
 const SONAR_WAKE_TIMEOUT_MS = Number(process.env.SONAR_WAKE_TIMEOUT_MS || 180 * 1000);
 const MAX_OUTPUT_CHARS = 20_000;
 
+const DEFAULT_LIMITS = { timeoutMs: RUN_TIMEOUT_MS, memory: "2g", cpus: 2 };
+
 function listProjects() {
-  return readdirSync(PROJECTS_ROOT, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => {
-      const dir = join(PROJECTS_ROOT, e.name);
-      return { name: e.name, type: detectType(dir) };
-    });
+  return listProjectsIn(PROJECTS_ROOT, PROJECTS_FILE, DEFAULT_LIMITS);
 }
 
 // Resolves `project` against the allowlist `list_projects` itself returns —
@@ -40,7 +41,7 @@ function resolveProject(project) {
   if (!known) throw new Error(`unknown project "${project}" — call list_projects first`);
   const dir = join(PROJECTS_ROOT, project);
   if (relative(PROJECTS_ROOT, dir).startsWith("..")) throw new Error("invalid project path");
-  return { dir, type: known.type };
+  return { ...known, dir };
 }
 
 function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS } = {}) {
@@ -57,12 +58,15 @@ function runContainer(args, { timeoutMs = RUN_TIMEOUT_MS } = {}) {
   });
 }
 
-const server = new McpServer({ name: "devbox-mcp", version: "0.3.0" });
+const server = new McpServer({ name: "devbox-mcp", version: "0.4.0" });
 
 server.registerTool(
   "list_projects",
   {
-    description: `List projects under ${PROJECTS_ROOT} and their detected toolchain (dotnet/npm/pytest/unknown).`,
+    description:
+      `List projects under ${PROJECTS_ROOT}` +
+      (PROJECTS_FILE ? " named in the projects file" : "") +
+      ", with their toolchain (dotnet/npm/pytest/unknown) and run_tests limits.",
     inputSchema: {},
   },
   async () => ({
@@ -79,7 +83,7 @@ server.registerTool(
     inputSchema: { project: z.string() },
   },
   async ({ project }) => {
-    const { dir, type } = resolveProject(project);
+    const { dir, type, timeoutMs, memory, cpus } = resolveProject(project);
     if (!type || !RUNNERS[type]) {
       return {
         content: [{ type: "text", text: `no supported toolchain detected for "${project}"` }],
@@ -93,8 +97,8 @@ server.registerTool(
       "--rm",
       "--name",
       name,
-      "--memory=2g",
-      "--cpus=2",
+      `--memory=${memory}`,
+      `--cpus=${cpus}`,
       // ponytail: package restore (npm ci / dotnet restore / pip install)
       // needs registry access, so this can't be --network=none. That's the
       // real exposure: test/restore code in the project gets outbound network
@@ -110,7 +114,7 @@ server.registerTool(
       "sh",
       "-c",
       runner.cmd,
-    ]);
+    ], { timeoutMs });
     return { content: [{ type: "text", text: output }], isError: code !== 0 };
   }
 );
